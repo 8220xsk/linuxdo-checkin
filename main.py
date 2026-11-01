@@ -4,6 +4,7 @@ new Env("Linux.Do 签到")
 """
 
 import os
+import json
 import random
 import time
 import functools
@@ -65,6 +66,11 @@ SESSION_URL = "https://linux.do/session"
 CSRF_URL = "https://linux.do/session/csrf"
 CAPTCHA_VERIFY_URL = "https://linux.do/captcha/hcaptcha/create.json"
 HCAPTCHA_WEBSITE_KEY = "a776b4ac-8c4c-441e-986a-c6ee9ed8cf08"  # linux.do 登录 hCaptcha sitekey
+# 登录成功后的 Cookie 缓存文件，下次运行直接复用，避免每次都过验证码
+COOKIE_CACHE = os.environ.get(
+    "LINUXDO_COOKIE_CACHE",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "linuxdo_cookies.json"),
+)
 
 
 class LinuxDoBrowser:
@@ -200,6 +206,58 @@ class LinuxDoBrowser:
         except Exception as e:
             logger.error(f"YesCaptcha 请求异常: {e}")
             return None, None
+
+    def try_cached_login(self) -> bool:
+        """尝试用本地缓存的 Cookie 恢复登录，成功返回 True"""
+        if not os.path.exists(COOKIE_CACHE):
+            logger.info("无本地 Cookie 缓存，走完整登录")
+            return False
+        try:
+            with open(COOKIE_CACHE, encoding="utf-8") as f:
+                cookies = json.load(f)
+        except Exception as e:
+            logger.warning(f"读取 Cookie 缓存失败: {e}")
+            return False
+        if not cookies:
+            return False
+
+        logger.info(f"发现本地 Cookie 缓存 ({len(cookies)} 条)，验证中...")
+        for ck in cookies:
+            self.session.cookies.set(ck["name"], ck["value"], domain="linux.do")
+        try:
+            resp = self.session.get(
+                "https://linux.do/session/current.json",
+                impersonate="chrome151",
+                timeout=30,
+            )
+            current_user = resp.json().get("current_user") if resp.status_code == 200 else None
+            if current_user:
+                logger.info(f"本地 Cookie 有效 (当前用户: {current_user.get('username')})，跳过登录")
+                dp_cookies = [
+                    {"name": ck["name"], "value": ck["value"], "domain": ".linux.do", "path": "/"}
+                    for ck in cookies
+                ]
+                self.page.set.cookies(dp_cookies)
+                self.page.get(HOME_URL)
+                time.sleep(3)
+                return True
+        except Exception as e:
+            logger.warning(f"本地 Cookie 验证异常: {e}")
+        logger.info("本地 Cookie 已失效，走完整登录")
+        return False
+
+    def save_cookies(self):
+        """登录成功后把 Cookie 缓存到本地，供下次运行复用"""
+        try:
+            cookies = [
+                {"name": c.name, "value": c.value, "domain": c.domain or "linux.do", "path": c.path or "/"}
+                for c in self.session.cookies
+            ]
+            with open(COOKIE_CACHE, "w", encoding="utf-8") as f:
+                json.dump(cookies, f, ensure_ascii=False, indent=2)
+            logger.info(f"Cookie 已缓存到 {COOKIE_CACHE} ({len(cookies)} 条)")
+        except Exception as e:
+            logger.warning(f"Cookie 缓存写入失败: {e}")
 
     def login(self):
         logger.info("开始账号密码登录")
@@ -370,14 +428,20 @@ class LinuxDoBrowser:
 
     def run(self):
         try:
-            # 优先使用手动 Cookie 登录，没有再使用账号密码
+            # 优先使用手动 Cookie 登录，其次本地缓存，最后账号密码
             if COOKIES:
                 login_res = self.login_with_cookies(COOKIES)
                 if not login_res:
                     logger.warning("Cookie 登录失败，尝试账号密码登录...")
                     login_res = self.login()
+                    if login_res:
+                        self.save_cookies()
             else:
-                login_res = self.login()
+                login_res = self.try_cached_login()
+                if not login_res:
+                    login_res = self.login()
+                    if login_res:
+                        self.save_cookies()
             if not login_res:
                 logger.error("登录验证失败，程序终止")
                 return

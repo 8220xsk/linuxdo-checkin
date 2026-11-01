@@ -19,6 +19,7 @@ logs/
 .env
 .env.*
 cookies.txt
+linuxdo_cookies.json
 
 # IDE / 编辑器
 .idea/
