@@ -432,6 +432,22 @@ class LinuxDoBrowser:
         logger.info(f"点赞帖子 {post_id}: {r.status_code}")
         return r.status_code == 200
 
+    def _fetch_summary(self):
+        """拉取用户统计，返回 (trust_level, user_summary)，失败返回 (None, None)"""
+        if not self.username:
+            return None, None
+        resp = self.get_with_cf_fallback(f"https://linux.do/u/{self.username}/summary.json")
+        if resp.status_code != 200:
+            return None, None
+        data = resp.json()
+        summary = data.get("user_summary")
+        trust_level = None
+        for u in data.get("users", []):
+            if u.get("username") == self.username:
+                trust_level = u.get("trust_level")
+                break
+        return trust_level, summary
+
     def api_browse(self):
         """无头浏览器被 CF 拦截时，改用已登录会话直接读话题"""
         logger.info("切换到 API 方式浏览话题")
@@ -441,6 +457,14 @@ class LinuxDoBrowser:
             if not topics:
                 logger.error("API 获取话题列表失败")
                 return False
+
+            # 点赞按升级要求缺口来：1→2 级需要送出赞累计 1 个，够了就不再点
+            max_likes = 0
+            trust_level, summary = self._fetch_summary()
+            if trust_level == 1 and summary is not None:
+                max_likes = max(0, 1 - int(summary.get("likes_given", 0)))
+            logger.info(f"本次计划点赞: {max_likes} 个")
+
             picked = random.sample(topics, min(10, len(topics)))
             like_count = 0
             for t in picked:
@@ -449,13 +473,8 @@ class LinuxDoBrowser:
                 try:
                     r = self.get_with_cf_fallback(f"https://linux.do/t/{tid}.json?track_visit=true")
                     logger.info(f"API 阅读: {title} ({r.status_code})")
-                    # 30% 概率给首帖点赞（升级要求需要送出赞），每次运行最多 5 个
                     # toggle 接口对已赞帖子会变成取消赞，先检查 current_user_reaction
-                    if (
-                        r.status_code == 200
-                        and like_count < 5
-                        and random.random() < 0.3
-                    ):
+                    if r.status_code == 200 and like_count < max_likes:
                         posts = r.json().get("post_stream", {}).get("posts", [])
                         if posts and not posts[0].get("current_user_reaction"):
                             if self.like_post(posts[0].get("id"), f"https://linux.do/t/{tid}"):
@@ -587,19 +606,10 @@ class LinuxDoBrowser:
     def print_user_summary(self):
         """打印用户统计与升级进度，替代已改版的 Connect Info"""
         logger.info("获取用户统计")
-        if not self.username:
-            logger.warning("未获取到用户名，跳过用户统计")
-            return
-        resp = self.get_with_cf_fallback(f"https://linux.do/u/{self.username}/summary.json")
-        summary = resp.json().get("user_summary") if resp.status_code == 200 else None
+        trust_level, summary = self._fetch_summary()
         if not summary:
-            logger.warning(f"用户统计获取失败 (状态码 {resp.status_code})")
+            logger.warning("用户统计获取失败")
             return
-        trust_level = "未知"
-        for u in resp.json().get("users", []):
-            if u.get("username") == self.username:
-                trust_level = u.get("trust_level", "未知")
-                break
 
         # 升级要求来自官方说明帖: https://linux.do/t/topic/2460
         # 注意 2→3 级按"过去100天"窗口统计，summary 的累计值仅供参考
