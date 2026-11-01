@@ -30,6 +30,7 @@
 | 环境变量名称             | 描述                                         | 示例值                          |
 |--------------------|--------------------------------------------|------------------------------|
 | `LINUXDO_COOKIES`  | 从浏览器 DevTools 复制的 Cookie 字符串，设置后优先使用，无需账号密码 | `_t=xxx; _forum_session=yyy` |
+| `YESCAPTCHA_CLIENT_KEY` | YesCaptcha 的 clientKey，账号密码登录时用于通过 linux.do 登录人机验证 (hCaptcha) | `your_client_key` |
 
 > 获取方式：打开 [linux.do](https://linux.do/) 并登录 → 按 F12 → Application → Cookies → `https://linux.do` → 全选所有 Cookie 复制为字符串粘贴即可。
 

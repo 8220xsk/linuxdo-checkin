@@ -40,6 +40,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           LINUXDO_COOKIES: ${{ secrets.LINUXDO_COOKIES }}
+          YESCAPTCHA_CLIENT_KEY: ${{ secrets.YESCAPTCHA_CLIENT_KEY }}
           BROWSE_ENABLED: ${{ secrets.BROWSE_ENABLED }}
         run: |
           python main.py

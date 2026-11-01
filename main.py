@@ -47,6 +47,8 @@ os.environ.pop("DYLD_LIBRARY_PATH", None)
 USERNAME = os.environ.get("LINUXDO_USERNAME")
 PASSWORD = os.environ.get("LINUXDO_PASSWORD")
 COOKIES = os.environ.get("LINUXDO_COOKIES", "").strip()  # 手动设置的 Cookie 字符串，优先使用
+YESCAPTCHA_CLIENT_KEY = os.environ.get("YESCAPTCHA_CLIENT_KEY", "").strip()  # YesCaptcha 的 clientKey，用于过登录 hCaptcha
+YESCAPTCHA_API_BASE = os.environ.get("YESCAPTCHA_API_BASE", "https://api.yescaptcha.com").strip().rstrip("/")
 BROWSE_ENABLED = os.environ.get("BROWSE_ENABLED", "true").strip().lower() not in [
     "false",
     "0",
@@ -61,6 +63,8 @@ HOME_URL = "https://linux.do/"
 LOGIN_URL = "https://linux.do/login"
 SESSION_URL = "https://linux.do/session"
 CSRF_URL = "https://linux.do/session/csrf"
+CAPTCHA_VERIFY_URL = "https://linux.do/captcha/hcaptcha/create.json"
+HCAPTCHA_WEBSITE_KEY = "a776b4ac-8c4c-441e-986a-c6ee9ed8cf08"  # linux.do 登录 hCaptcha sitekey
 
 
 class LinuxDoBrowser:
@@ -155,6 +159,48 @@ class LinuxDoBrowser:
             logger.info("Cookie 登录验证成功")
             return True
 
+    def solve_hcaptcha(self):
+        """通过 YesCaptcha 解决 linux.do 登录的 hCaptcha，返回 (token, userAgent) 或 (None, None)"""
+        if not YESCAPTCHA_CLIENT_KEY:
+            logger.error("未设置 YESCAPTCHA_CLIENT_KEY，无法通过登录人机验证")
+            return None, None
+
+        logger.info("通过 YesCaptcha 解决 hCaptcha...")
+
+        def _call(method, payload):
+            resp = requests.post(
+                f"{YESCAPTCHA_API_BASE}/{method}",
+                json={"clientKey": YESCAPTCHA_CLIENT_KEY, **payload},
+                timeout=30,
+            )
+            data = resp.json()
+            if data.get("errorId"):
+                raise RuntimeError(f"{data.get('errorCode')}: {data.get('errorDescription')}")
+            return data
+
+        task = {
+            "type": "HCaptchaTaskProxyless",
+            "websiteURL": LOGIN_URL,
+            "websiteKey": HCAPTCHA_WEBSITE_KEY,
+        }
+        try:
+            task_id = _call("createTask", {"task": task})["taskId"]
+            logger.info(f"createTask 成功, taskId: {task_id}")
+            for _ in range(36):  # 每 5 秒查询一次，最多约 3 分钟
+                time.sleep(5)
+                result = _call("getTaskResult", {"taskId": task_id})
+                if result.get("status") == "ready":
+                    solution = result["solution"]
+                    token = solution["gRecaptchaResponse"]
+                    ua = solution.get("userAgent")
+                    logger.info(f"hCaptcha 解决成功 (token 长度 {len(token)})")
+                    return token, ua
+            logger.error("YesCaptcha 解题超时")
+            return None, None
+        except Exception as e:
+            logger.error(f"YesCaptcha 请求异常: {e}")
+            return None, None
+
     def login(self):
         logger.info("开始账号密码登录")
         # Step 1: Get CSRF Token
@@ -174,7 +220,27 @@ class LinuxDoBrowser:
         csrf_token = csrf_data.get("csrf")
         logger.info(f"CSRF Token obtained: {csrf_token[:10]}...")
 
-        # Step 2: Login
+        # Step 2: 通过人机验证 (hCaptcha)，否则登录接口一律返回 403 invalid_access
+        captcha_token, captcha_ua = self.solve_hcaptcha()
+        if not captcha_token:
+            return False
+        logger.info("提交人机验证 token...")
+        if captcha_ua:  # 提交时用 YesCaptcha 返回的 userAgent，与 token 生成环境一致
+            headers["User-Agent"] = captcha_ua
+        headers.update({"X-CSRF-Token": csrf_token})
+        resp_verify = self.session.post(
+            CAPTCHA_VERIFY_URL,
+            data={"token": captcha_token},
+            headers=headers,
+            impersonate="chrome151",
+        )
+        if resp_verify.status_code != 200:
+            logger.error(f"人机验证提交失败，状态码: {resp_verify.status_code}")
+            logger.error(resp_verify.text)
+            return False
+        logger.info("人机验证通过!")
+
+        # Step 3: Login
         logger.info("正在登录...")
         headers.update(
             {
@@ -312,8 +378,9 @@ class LinuxDoBrowser:
                     login_res = self.login()
             else:
                 login_res = self.login()
-            if not login_res:  # 登录
-                logger.warning("登录验证失败")
+            if not login_res:
+                logger.error("登录验证失败，程序终止")
+                return
 
             if BROWSE_ENABLED:
                 click_topic_res = self.click_topic()  # 点击主题
