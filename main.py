@@ -90,7 +90,7 @@ class LinuxDoBrowser:
         self.session = requests.Session()
         self.session.headers.update(
             {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36 Edg/142.0.0.0",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
                 "Accept": "application/json, text/javascript, */*; q=0.01",
                 "Accept-Language": "zh-CN,zh;q=0.9",
             }
@@ -160,13 +160,13 @@ class LinuxDoBrowser:
         # Step 1: Get CSRF Token
         logger.info("获取 CSRF token...")
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36 Edg/142.0.0.0",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
             "Accept": "application/json, text/javascript, */*; q=0.01",
             "Accept-Language": "zh-CN,zh;q=0.9",
             "X-Requested-With": "XMLHttpRequest",
             "Referer": LOGIN_URL,
         }
-        resp_csrf = self.session.get(CSRF_URL, headers=headers, impersonate="firefox135")
+        resp_csrf = self.session.get(CSRF_URL, headers=headers, impersonate="chrome151")
         if resp_csrf.status_code != 200:
             logger.error(f"获取 CSRF token 失败: {resp_csrf.status_code}")
             return False        
@@ -193,7 +193,7 @@ class LinuxDoBrowser:
 
         try:
             resp_login = self.session.post(
-                SESSION_URL, data=data, impersonate="chrome136", headers=headers
+                SESSION_URL, data=data, impersonate="chrome151", headers=headers
             )
 
             if resp_login.status_code == 200:
@@ -353,7 +353,7 @@ class LinuxDoBrowser:
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
         }
         resp = self.session.get(
-            "https://connect.linux.do/", headers=headers, impersonate="chrome136"
+            "https://connect.linux.do/", headers=headers, impersonate="chrome151"
         )
         soup = BeautifulSoup(resp.text, "html.parser")
         rows = soup.select("table tr")
