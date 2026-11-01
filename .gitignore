@@ -20,6 +20,7 @@ logs/
 .env.*
 cookies.txt
 linuxdo_cookies.json
+yescaptcha/
 
 # IDE / 编辑器
 .idea/
