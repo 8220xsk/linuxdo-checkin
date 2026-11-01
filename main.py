@@ -267,7 +267,7 @@ class LinuxDoBrowser:
         try:
             cookies = [
                 {"name": c.name, "value": c.value, "domain": c.domain or "linux.do", "path": c.path or "/"}
-                for c in self.session.cookies
+                for c in self.session.cookies.jar  # 直接迭代 Cookies 得到的是名字字符串，要走 jar
             ]
             with open(COOKIE_CACHE, "w", encoding="utf-8") as f:
                 json.dump(cookies, f, ensure_ascii=False, indent=2)
