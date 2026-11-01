@@ -113,6 +113,7 @@ class LinuxDoBrowser:
         # 初始化通知管理器
         self.notifier = NotificationManager()
         self._impersonate = FALLBACK_IMPERSONATES[0]  # 当前可用的 CF 指纹
+        self.username = None  # 登录后从 current.json 取，用于读取用户统计
 
     def get_with_cf_fallback(self, url, headers=None, timeout=30):
         """GET 请求带指纹降级：被 CF 拦截（Just a moment）时换下一个指纹重试"""
@@ -248,7 +249,8 @@ class LinuxDoBrowser:
             )
             current_user = resp.json().get("current_user") if resp.status_code == 200 else None
             if current_user:
-                logger.info(f"本地 Cookie 有效 (当前用户: {current_user.get('username')})，跳过登录")
+                self.username = current_user.get("username")
+                logger.info(f"本地 Cookie 有效 (当前用户: {self.username})，跳过登录")
                 dp_cookies = [
                     {"name": ck["name"], "value": ck["value"], "domain": ".linux.do", "path": "/"}
                     for ck in cookies
@@ -379,7 +381,8 @@ class LinuxDoBrowser:
             resp_check = self.get_with_cf_fallback("https://linux.do/session/current.json")
             current_user = resp_check.json().get("current_user") if resp_check.status_code == 200 else None
             if current_user:
-                logger.info(f"API 验证登录成功，当前用户: {current_user.get('username')}")
+                self.username = current_user.get("username")
+                logger.info(f"API 验证登录成功，当前用户: {self.username}")
             else:
                 logger.warning(f"API 验证未返回 current_user (状态码 {resp_check.status_code})")
         except Exception as e:
@@ -519,7 +522,7 @@ class LinuxDoBrowser:
                         logger.error("浏览任务失败（浏览器与 API 均未成功）")
                 else:
                     logger.info("完成浏览任务")
-            self.print_connect_info()  # 打印连接信息
+            self.print_user_summary()  # 打印用户统计
             self.send_notifications(BROWSE_ENABLED)  # 发送通知
         finally:
             try:
@@ -545,60 +548,41 @@ class LinuxDoBrowser:
         except Exception as e:
             logger.error(f"点赞失败: {str(e)}")
 
-    def print_connect_info(self):
-        logger.info("获取连接信息")
-        headers = {
-            "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
-        }
-        resp = self.get_with_cf_fallback("https://connect.linux.do/", headers=headers)
-        if resp.status_code != 200:
-            logger.warning(f"Connect Info 获取失败，状态码: {resp.status_code}")
+    def print_user_summary(self):
+        """打印用户统计（访问天数、阅读进度等），替代已改版的 Connect Info"""
+        logger.info("获取用户统计")
+        if not self.username:
+            logger.warning("未获取到用户名，跳过用户统计")
             return
-        if "Just a moment" in resp.text:
-            logger.warning("Connect Info 被 CF 挑战页拦截")
+        resp = self.get_with_cf_fallback(f"https://linux.do/u/{self.username}/summary.json")
+        summary = resp.json().get("user_summary") if resp.status_code == 200 else None
+        if not summary:
+            logger.warning(f"用户统计获取失败 (状态码 {resp.status_code})")
             return
-        soup = BeautifulSoup(resp.text, "html.parser")
-
-        # 用户菜单里的信任级别（新版页面）
-        level_text = ""
-        for div in soup.select(".user-menu-info div"):
-            text = div.get_text(strip=True)
-            if "信任级别" in text:
-                level_text = text
-
-        # 进度表格（若账号可见）
-        info = []
-        for row in soup.select("table tr"):
-            cells = row.select("td")
-            if len(cells) >= 3:
-                project = cells[0].text.strip()
-                current = cells[1].text.strip() or "0"
-                requirement = cells[2].text.strip() or "0"
-                info.append([project, current, requirement])
-
-        logger.info("--------------Connect Info-----------------")
-        if level_text:
-            logger.info(level_text)
-        if info:
-            logger.info("\n" + tabulate(info, headers=["项目", "当前", "要求"], tablefmt="pretty"))
-            return
-        # 新版页面低信任级别：无表格，只有提示卡
-        empty = soup.select_one(".empty-state")
-        if empty:
-            title = empty.select_one(".card-title")
-            msgs = [p.get_text(strip=True) for p in empty.select("p") if p.get_text(strip=True)]
-            logger.info(
-                (title.get_text(strip=True) if title else "") + " | " + " | ".join(msgs)
-            )
-            return
-        if soup.select_one(".auth-card") or (soup.title and "登录" in soup.title.get_text()):
-            logger.warning("Connect Info 需要登录（Connect 会话无效）")
-            return
-        logger.warning(f"Connect Info 页面结构未识别（HTML 长度 {len(resp.text)}），请检查页面是否又改版")
+        trust_level = "未知"
+        for u in resp.json().get("users", []):
+            if u.get("username") == self.username:
+                trust_level = u.get("trust_level", "未知")
+                break
+        time_read = summary.get("time_read", 0)
+        h, m = divmod(int(time_read) // 60, 60)
+        info = [
+            ["信任级别", trust_level, "-"],
+            ["访问天数", summary.get("days_visited", 0), "-"],
+            ["进入话题", summary.get("topics_entered", 0), "-"],
+            ["已读帖子", summary.get("posts_read_count", 0), "-"],
+            ["阅读时长", f"{h}小时{m}分", "-"],
+            ["送出赞", summary.get("likes_given", 0), "-"],
+            ["收到赞", summary.get("likes_received", 0), "-"],
+            ["发布话题", summary.get("topic_count", 0), "-"],
+            ["发布回复", summary.get("post_count", 0), "-"],
+        ]
+        logger.info("--------------用户统计-----------------")
+        logger.info("\n" + tabulate(info, headers=["项目", "当前", "要求"], tablefmt="pretty"))
 
     def send_notifications(self, browse_enabled):
         """发送签到通知"""
-        status_msg = f"✅每日登录成功: {USERNAME}"
+        status_msg = f"✅每日登录成功: {self.username or USERNAME}"
         if browse_enabled:
             status_msg += " + 浏览任务完成"
         
