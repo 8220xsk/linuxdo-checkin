@@ -113,6 +113,7 @@ class LinuxDoBrowser:
         self.notifier = NotificationManager()
         self._impersonate = FALLBACK_IMPERSONATES[0]  # 当前可用的 CF 指纹
         self.username = None  # 登录后从 current.json 取，用于读取用户统计
+        self._csrf_token = None  # 懒加载，点赞等写操作前获取
 
     def get_with_cf_fallback(self, url, headers=None, timeout=30):
         """GET 请求带指纹降级：被 CF 拦截（Just a moment）时换下一个指纹重试"""
@@ -407,6 +408,30 @@ class LinuxDoBrowser:
             logger.info("登录验证成功")
             return True
 
+    def _get_csrf(self):
+        """懒加载 CSRF token，供点赞等写操作使用"""
+        if not self._csrf_token:
+            r = self.get_with_cf_fallback(CSRF_URL, headers={"X-Requested-With": "XMLHttpRequest"})
+            self._csrf_token = r.json().get("csrf") if r.status_code == 200 else None
+        return self._csrf_token
+
+    def like_post(self, post_id, topic_url):
+        """给帖子点 heart 回应（toggle 接口，调用前需确认未点过赞）"""
+        csrf = self._get_csrf()
+        if not csrf:
+            logger.warning("获取 CSRF token 失败，跳过点赞")
+            return False
+        headers = {
+            "X-CSRF-Token": csrf,
+            "X-Requested-With": "XMLHttpRequest",
+            "Accept": "application/json",
+            "Referer": topic_url,
+        }
+        url = f"https://linux.do/discourse-reactions/posts/{post_id}/custom-reactions/heart/toggle.json"
+        r = self.session.put(url, headers=headers, impersonate=self._impersonate, timeout=30)
+        logger.info(f"点赞帖子 {post_id}: {r.status_code}")
+        return r.status_code == 200
+
     def api_browse(self):
         """无头浏览器被 CF 拦截时，改用已登录会话直接读话题"""
         logger.info("切换到 API 方式浏览话题")
@@ -417,12 +442,24 @@ class LinuxDoBrowser:
                 logger.error("API 获取话题列表失败")
                 return False
             picked = random.sample(topics, min(10, len(topics)))
+            like_count = 0
             for t in picked:
                 tid = t.get("id")
                 title = (t.get("title") or "")[:40]
                 try:
                     r = self.get_with_cf_fallback(f"https://linux.do/t/{tid}.json?track_visit=true")
                     logger.info(f"API 阅读: {title} ({r.status_code})")
+                    # 30% 概率给首帖点赞（升级要求需要送出赞），每次运行最多 5 个
+                    # toggle 接口对已赞帖子会变成取消赞，先检查 current_user_reaction
+                    if (
+                        r.status_code == 200
+                        and like_count < 5
+                        and random.random() < 0.3
+                    ):
+                        posts = r.json().get("post_stream", {}).get("posts", [])
+                        if posts and not posts[0].get("current_user_reaction"):
+                            if self.like_post(posts[0].get("id"), f"https://linux.do/t/{tid}"):
+                                like_count += 1
                 except Exception as e:
                     logger.warning(f"API 阅读话题 {tid} 失败: {e}")
                 time.sleep(random.uniform(2, 4))
