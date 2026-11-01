@@ -12,7 +12,6 @@ from loguru import logger
 from DrissionPage import ChromiumOptions, Chromium
 from tabulate import tabulate
 from curl_cffi import requests
-from bs4 import BeautifulSoup
 from notify import NotificationManager
 
 
