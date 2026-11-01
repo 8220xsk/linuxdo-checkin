@@ -66,6 +66,9 @@ SESSION_URL = "https://linux.do/session"
 CSRF_URL = "https://linux.do/session/csrf"
 CAPTCHA_VERIFY_URL = "https://linux.do/captcha/hcaptcha/create.json"
 HCAPTCHA_WEBSITE_KEY = "a776b4ac-8c4c-441e-986a-c6ee9ed8cf08"  # linux.do 登录 hCaptcha sitekey
+# CF 对各浏览器指纹的拦截随时间波动（实测同一天 chrome151 和 firefox155 轮流被拦），
+# 按顺序尝试，谁没被拦就用谁，并记住供后续请求复用
+FALLBACK_IMPERSONATES = ["chrome151", "firefox155", "chrome152", "firefox154"]
 # 登录成功后的 Cookie 缓存文件，下次运行直接复用，避免每次都过验证码
 COOKIE_CACHE = os.environ.get(
     "LINUXDO_COOKIE_CACHE",
@@ -107,6 +110,19 @@ class LinuxDoBrowser:
         )
         # 初始化通知管理器
         self.notifier = NotificationManager()
+        self._impersonate = FALLBACK_IMPERSONATES[0]  # 当前可用的 CF 指纹
+
+    def get_with_cf_fallback(self, url, headers=None, timeout=30):
+        """GET 请求带指纹降级：被 CF 拦截（Just a moment）时换下一个指纹重试"""
+        candidates = [self._impersonate] + [f for f in FALLBACK_IMPERSONATES if f != self._impersonate]
+        resp = None
+        for imp in candidates:
+            resp = self.session.get(url, headers=headers, impersonate=imp, timeout=timeout)
+            if resp.status_code == 200 or "Just a moment" not in resp.text:
+                self._impersonate = imp
+                return resp
+            logger.warning(f"指纹 {imp} 被 CF 拦截，切换下一个重试")
+        return resp
 
     @staticmethod
     def parse_cookie_string(cookie_str: str) -> list[dict]:
@@ -225,10 +241,8 @@ class LinuxDoBrowser:
         for ck in cookies:
             self.session.cookies.set(ck["name"], ck["value"], domain="linux.do")
         try:
-            resp = self.session.get(
-                "https://linux.do/session/current.json",
-                impersonate="chrome151",
-                timeout=30,
+            resp = self.get_with_cf_fallback(
+                "https://linux.do/session/current.json", timeout=30
             )
             current_user = resp.json().get("current_user") if resp.status_code == 200 else None
             if current_user:
@@ -270,7 +284,7 @@ class LinuxDoBrowser:
             "X-Requested-With": "XMLHttpRequest",
             "Referer": LOGIN_URL,
         }
-        resp_csrf = self.session.get(CSRF_URL, headers=headers, impersonate="chrome151")
+        resp_csrf = self.get_with_cf_fallback(CSRF_URL, headers=headers)
         if resp_csrf.status_code != 200:
             logger.error(f"获取 CSRF token 失败: {resp_csrf.status_code}")
             return False        
@@ -290,7 +304,7 @@ class LinuxDoBrowser:
             CAPTCHA_VERIFY_URL,
             data={"token": captcha_token},
             headers=headers,
-            impersonate="chrome151",
+            impersonate=self._impersonate,
         )
         if resp_verify.status_code != 200:
             logger.error(f"人机验证提交失败，状态码: {resp_verify.status_code}")
@@ -317,7 +331,7 @@ class LinuxDoBrowser:
 
         try:
             resp_login = self.session.post(
-                SESSION_URL, data=data, impersonate="chrome151", headers=headers
+                SESSION_URL, data=data, impersonate=self._impersonate, headers=headers
             )
 
             if resp_login.status_code == 200:
@@ -484,7 +498,7 @@ class LinuxDoBrowser:
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
         }
         resp = self.session.get(
-            "https://connect.linux.do/", headers=headers, impersonate="chrome151"
+            "https://connect.linux.do/", headers=headers, impersonate=self._impersonate
         )
         soup = BeautifulSoup(resp.text, "html.parser")
         rows = soup.select("table tr")
