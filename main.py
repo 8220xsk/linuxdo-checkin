@@ -548,25 +548,53 @@ class LinuxDoBrowser:
     def print_connect_info(self):
         logger.info("获取连接信息")
         headers = {
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+            "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
         }
-        resp = self.session.get(
-            "https://connect.linux.do/", headers=headers, impersonate=self._impersonate
-        )
+        resp = self.get_with_cf_fallback("https://connect.linux.do/", headers=headers)
+        if resp.status_code != 200:
+            logger.warning(f"Connect Info 获取失败，状态码: {resp.status_code}")
+            return
+        if "Just a moment" in resp.text:
+            logger.warning("Connect Info 被 CF 挑战页拦截")
+            return
         soup = BeautifulSoup(resp.text, "html.parser")
-        rows = soup.select("table tr")
-        info = []
 
-        for row in rows:
+        # 用户菜单里的信任级别（新版页面）
+        level_text = ""
+        for div in soup.select(".user-menu-info div"):
+            text = div.get_text(strip=True)
+            if "信任级别" in text:
+                level_text = text
+
+        # 进度表格（若账号可见）
+        info = []
+        for row in soup.select("table tr"):
             cells = row.select("td")
             if len(cells) >= 3:
                 project = cells[0].text.strip()
-                current = cells[1].text.strip() if cells[1].text.strip() else "0"
-                requirement = cells[2].text.strip() if cells[2].text.strip() else "0"
+                current = cells[1].text.strip() or "0"
+                requirement = cells[2].text.strip() or "0"
                 info.append([project, current, requirement])
 
         logger.info("--------------Connect Info-----------------")
-        logger.info("\n" + tabulate(info, headers=["项目", "当前", "要求"], tablefmt="pretty"))
+        if level_text:
+            logger.info(level_text)
+        if info:
+            logger.info("\n" + tabulate(info, headers=["项目", "当前", "要求"], tablefmt="pretty"))
+            return
+        # 新版页面低信任级别：无表格，只有提示卡
+        empty = soup.select_one(".empty-state")
+        if empty:
+            title = empty.select_one(".card-title")
+            msgs = [p.get_text(strip=True) for p in empty.select("p") if p.get_text(strip=True)]
+            logger.info(
+                (title.get_text(strip=True) if title else "") + " | " + " | ".join(msgs)
+            )
+            return
+        if soup.select_one(".auth-card") or (soup.title and "登录" in soup.title.get_text()):
+            logger.warning("Connect Info 需要登录（Connect 会话无效）")
+            return
+        logger.warning(f"Connect Info 页面结构未识别（HTML 长度 {len(resp.text)}），请检查页面是否又改版")
 
     def send_notifications(self, browse_enabled):
         """发送签到通知"""
