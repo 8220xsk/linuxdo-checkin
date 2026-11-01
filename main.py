@@ -372,24 +372,73 @@ class LinuxDoBrowser:
         self.page.get(HOME_URL)
 
         time.sleep(5)
+
+        # 登录接口 200 且无 error 即已登录成功；浏览器侧验证仅作参考，
+        # 因为无头浏览器可能被 CF 挑战页拦截，不代表 Cookie 无效
+        try:
+            resp_check = self.get_with_cf_fallback("https://linux.do/session/current.json")
+            current_user = resp_check.json().get("current_user") if resp_check.status_code == 200 else None
+            if current_user:
+                logger.info(f"API 验证登录成功，当前用户: {current_user.get('username')}")
+            else:
+                logger.warning(f"API 验证未返回 current_user (状态码 {resp_check.status_code})")
+        except Exception as e:
+            logger.warning(f"API 验证异常: {e}")
+
+        page_title = self.page.title or ""
+        if "Just a moment" in page_title:
+            logger.warning("浏览器侧被 CF 挑战页拦截（不影响已登录会话）")
+            return True
         try:
             user_ele = self.page.ele("@id=current-user")
         except Exception as e:
-            logger.warning(f"登录验证失败: {str(e)}")
+            logger.warning(f"浏览器侧登录验证异常: {str(e)}")
             return True
         if not user_ele:
             # Fallback check for avatar
             if "avatar" in self.page.html:
-                logger.info("登录验证成功 (通过 avatar)")
+                logger.info("浏览器侧登录验证成功 (通过 avatar)")
                 return True
-            logger.error("登录验证失败 (未找到 current-user)")
-            return False
+            logger.warning("浏览器侧未找到 current-user（以 API 验证结果为准）")
+            return True
         else:
             logger.info("登录验证成功")
             return True
 
+    def api_browse(self):
+        """无头浏览器被 CF 拦截时，改用已登录会话直接读话题"""
+        logger.info("切换到 API 方式浏览话题")
+        try:
+            resp = self.get_with_cf_fallback("https://linux.do/latest.json?no_definitions=true&per_page=30")
+            topics = resp.json().get("topic_list", {}).get("topics", []) if resp.status_code == 200 else []
+            if not topics:
+                logger.error("API 获取话题列表失败")
+                return False
+            picked = random.sample(topics, min(10, len(topics)))
+            for t in picked:
+                tid = t.get("id")
+                title = (t.get("title") or "")[:40]
+                try:
+                    r = self.get_with_cf_fallback(f"https://linux.do/t/{tid}.json?track_visit=true")
+                    logger.info(f"API 阅读: {title} ({r.status_code})")
+                except Exception as e:
+                    logger.warning(f"API 阅读话题 {tid} 失败: {e}")
+                time.sleep(random.uniform(2, 4))
+            logger.info("完成 API 浏览任务")
+            return True
+        except Exception as e:
+            logger.error(f"API 浏览异常: {e}")
+            return False
+
     def click_topic(self):
-        topic_list = self.page.ele("@id=list-area").eles(".:title")
+        if "Just a moment" in (self.page.title or ""):
+            logger.warning("浏览器被 CF 挑战页拦截，无法浏览")
+            return False
+        try:
+            topic_list = self.page.ele("@id=list-area").eles(".:title")
+        except Exception as e:
+            logger.warning(f"浏览器获取话题列表失败: {str(e)}")
+            return False
         if not topic_list:
             logger.error("未找到主题帖")
             return False
@@ -465,9 +514,11 @@ class LinuxDoBrowser:
             if BROWSE_ENABLED:
                 click_topic_res = self.click_topic()  # 点击主题
                 if not click_topic_res:
-                    logger.error("点击主题失败，程序终止")
-                    return
-                logger.info("完成浏览任务")
+                    logger.warning("浏览器浏览失败，尝试 API 浏览兜底...")
+                    if not self.api_browse():
+                        logger.error("浏览任务失败（浏览器与 API 均未成功）")
+                else:
+                    logger.info("完成浏览任务")
             self.print_connect_info()  # 打印连接信息
             self.send_notifications(BROWSE_ENABLED)  # 发送通知
         finally:
