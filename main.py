@@ -68,7 +68,8 @@ CAPTCHA_VERIFY_URL = "https://linux.do/captcha/hcaptcha/create.json"
 HCAPTCHA_WEBSITE_KEY = "a776b4ac-8c4c-441e-986a-c6ee9ed8cf08"  # linux.do 登录 hCaptcha sitekey
 # CF 对各浏览器指纹的拦截随时间波动（实测同一天 chrome151 和 firefox155 轮流被拦），
 # 按顺序尝试，谁没被拦就用谁，并记住供后续请求复用
-FALLBACK_IMPERSONATES = ["chrome151", "firefox155", "chrome152", "firefox154"]
+# 注：这里能用的是 curl_cffi 内置的指纹（随 curl-cffi 版本更新，当前最高 firefox155/chrome152）
+FALLBACK_IMPERSONATES = ["firefox155", "chrome152", "chrome151", "firefox154"]
 # 登录成功后的 Cookie 缓存文件，下次运行直接复用，避免每次都过验证码
 COOKIE_CACHE = os.environ.get(
     "LINUXDO_COOKIE_CACHE",
