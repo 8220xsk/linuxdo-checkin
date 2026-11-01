@@ -548,7 +548,7 @@ class LinuxDoBrowser:
             logger.error(f"点赞失败: {str(e)}")
 
     def print_user_summary(self):
-        """打印用户统计（访问天数、阅读进度等），替代已改版的 Connect Info"""
+        """打印用户统计与升级进度，替代已改版的 Connect Info"""
         logger.info("获取用户统计")
         if not self.username:
             logger.warning("未获取到用户名，跳过用户统计")
@@ -563,21 +563,52 @@ class LinuxDoBrowser:
             if u.get("username") == self.username:
                 trust_level = u.get("trust_level", "未知")
                 break
+
+        # 升级要求来自官方说明帖: https://linux.do/t/topic/2460
+        # 注意 2→3 级按"过去100天"窗口统计，summary 的累计值仅供参考
         time_read = summary.get("time_read", 0)
         h, m = divmod(int(time_read) // 60, 60)
-        info = [
-            ["信任级别", trust_level, "-"],
-            ["访问天数", summary.get("days_visited", 0), "-"],
-            ["进入话题", summary.get("topics_entered", 0), "-"],
-            ["已读帖子", summary.get("posts_read_count", 0), "-"],
-            ["阅读时长", f"{h}小时{m}分", "-"],
-            ["送出赞", summary.get("likes_given", 0), "-"],
-            ["收到赞", summary.get("likes_received", 0), "-"],
-            ["发布话题", summary.get("topic_count", 0), "-"],
-            ["发布回复", summary.get("post_count", 0), "-"],
-        ]
+        read_minutes = int(time_read) // 60
+        if trust_level == 0:
+            requirements = [
+                ["进入话题", summary.get("topics_entered", 0), 5],
+                ["已读帖子", summary.get("posts_read_count", 0), 30],
+                ["阅读时间(分)", read_minutes, 10],
+            ]
+        elif trust_level == 1:
+            requirements = [
+                ["访问天数", summary.get("days_visited", 0), 15],
+                ["送出赞", summary.get("likes_given", 0), 1],
+                ["收到赞", summary.get("likes_received", 0), 1],
+                ["回复话题", summary.get("post_count", 0), 3],  # 近似值：summary 无"回复过的话题数"
+                ["浏览话题", summary.get("topics_entered", 0), 20],
+                ["已读帖子", summary.get("posts_read_count", 0), 100],
+                ["阅读时间(分)", read_minutes, 60],
+            ]
+        else:
+            requirements = [
+                ["访问天数", summary.get("days_visited", 0), "-"],
+                ["浏览话题", summary.get("topics_entered", 0), "-"],
+                ["已读帖子", summary.get("posts_read_count", 0), "-"],
+                ["阅读时间(分)", read_minutes, "-"],
+                ["送出赞", summary.get("likes_given", 0), "-"],
+                ["收到赞", summary.get("likes_received", 0), "-"],
+                ["发布话题", summary.get("topic_count", 0), "-"],
+                ["发布回复", summary.get("post_count", 0), "-"],
+            ]
+
+        info = []
+        for name, current, required in requirements:
+            if required == "-":
+                info.append([name, current, "-"])
+            else:
+                mark = "✅" if current >= required else ""
+                info.append([name, current, f"{required}{mark}"])
+        info.insert(0, ["信任级别", trust_level, "-"])
         logger.info("--------------用户统计-----------------")
         logger.info("\n" + tabulate(info, headers=["项目", "当前", "要求"], tablefmt="pretty"))
+        if isinstance(trust_level, int) and trust_level >= 2:
+            logger.info("提示: 2→3 级按过去100天窗口统计，准确进度需在 connect.linux.do 查看")
 
     def send_notifications(self, browse_enabled):
         """发送签到通知"""
